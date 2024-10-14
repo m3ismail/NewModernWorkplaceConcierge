@@ -1,0 +1,87 @@
+# ASP.NET CI/CD for the Modern Workplace Concierge Project
+
+trigger:
+- master
+
+pr: none
+
+name: $(date:yyyy).$(date:MM).$(date:dd)$(Rev:.r)
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+  artifactName: 'drop'
+  azureSubscription: 'AzureServiceConnection'
+  webAppName: 'mwconcierge'
+  resourceGroupName: 'intuneconcierge'
+  deploymentTime: ''
+
+stages:
+- stage: Build
+  jobs:
+  - job: Build
+    steps:
+      - task: NuGetToolInstaller@1
+      - task: NuGetCommand@2
+        inputs:
+          restoreSolution: '$(solution)'
+      - task: VersionAssemblies@2
+        inputs:
+          Path: '$(Build.SourcesDirectory)'
+          VersionNumber: '$(Build.BuildNumber)'
+          InjectVersion: False
+          FilenamePattern: 'AssemblyInfo.*'
+          OutputVersion: 'OutputedVersion'
+      - task: VSBuild@1
+        inputs:
+          solution: '$(solution)'
+          msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactStagingDirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
+          platform: '$(buildPlatform)'
+          configuration: '$(buildConfiguration)'
+
+      - task: VSTest@2
+        inputs:
+          platform: '$(buildPlatform)'
+          configuration: '$(buildConfiguration)'
+      
+      - task: PublishBuildArtifacts@1
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: '$(artifactName)'
+          publishLocation: 'Container'
+
+- stage: Deploy
+  jobs:
+  - job: Deploy
+    steps:
+    - checkout: none
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: '$(artifactName)'
+        downloadPath: '$(System.ArtifactsDirectory)'
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          $date=$(Get-Date -Format o);
+          Write-Host "##vso[task.setvariable variable=deploymentTime]$date"
+    - task: AzureRmWebAppDeployment@4
+      inputs:
+        ConnectionType: 'AzureRM'
+        azureSubscription: '$(azureSubscription)'
+        ResourceGroupName: '$(resourceGroupName)'
+        appType: 'webApp'
+        WebAppName: '$(webAppName)'
+        deployToSlotOrASE: true
+        packageForLinux: '$(System.ArtifactsDirectory)\**\*.zip'
+        AppSettings: '-CommitID $(Build.SourceVersion) -Repository $(BUILD.REPOSITORY.NAME) -Branch $(BUILD.SOURCEBRANCHNAME) -DeploymentTime "$(deploymentTime)"'
+        enableCustomDeployment: true
+        TakeAppOfflineFlag: false
+        RemoveAdditionalFilesFlag: true
+       
